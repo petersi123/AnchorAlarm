@@ -1,0 +1,167 @@
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+
+// Initialize GPS objects
+TinyGPSPlus gps;
+SoftwareSerial gpsSerial(5, 3);  // RX, TX
+
+// Pin definitions
+const int BUZZER_PIN = 7;
+const int BUTTON_PIN = 2;
+
+// Constants
+const unsigned long UPDATE_INTERVAL = 500;     // Position check interval
+const unsigned long DEBOUNCE_DELAY = 300;       // Button debounce delay
+const unsigned long BEEP_DURATION = 100;        // Duration of each beep
+const unsigned long BEEP_INTERVAL = 200;        // Interval between beep starts
+const double THRESHOLD = 0.00012;               // Approximately 10 meters
+
+// Variables
+volatile unsigned long lastInterruptTime = 0;
+unsigned long lastUpdate = 0;
+unsigned long lastBeepTime = 0;
+double refLatitude = 0.0;
+double refLongitude = 0.0;
+bool referenceSet = false;
+
+// Alarm state variables
+bool alarmActive = false;
+int beepCount = 0;
+bool beepState = false;
+
+void setup() {
+    Serial.begin(9600);
+    gpsSerial.begin(9600);
+    
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    pinMode(BUZZER_PIN, OUTPUT);
+    
+    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), setReference, FALLING);
+    
+    noTone(BUZZER_PIN);
+    Serial.println("GPS Anchor Alarm Started");
+}
+
+void loop() {
+    while (gpsSerial.available() > 0) {
+        gps.encode(gpsSerial.read());
+    }
+
+    // Update GPS check
+    if (millis() - lastUpdate >= UPDATE_INTERVAL) {
+        if (gps.location.isValid()) {
+            if (referenceSet) {
+                checkAnchorAlarm();
+            }
+        } else {
+            Serial.println("Location not available");
+        }
+        lastUpdate = millis();
+    }
+
+    // Handle alarm state
+    updateAlarm();
+}
+
+void setReference() {
+    unsigned long interruptTime = millis();
+    if (interruptTime - lastInterruptTime > DEBOUNCE_DELAY) {
+        if (gps.location.isValid()) {
+            refLatitude = gps.location.lat();
+            refLongitude = gps.location.lng();
+            referenceSet = true;
+            
+            Serial.println("\n=== Reference Position Set ===");
+            Serial.print("Reference Latitude: ");
+            Serial.println(refLatitude, 8);
+            Serial.print("Reference Longitude: ");
+            Serial.println(refLongitude, 8);
+            Serial.println("============================\n");
+            
+            // Start a single confirmation beep
+            beepCount = 1;
+            alarmActive = true;
+            lastBeepTime = millis();
+        }
+        lastInterruptTime = interruptTime;
+    }
+}
+
+void checkAnchorAlarm() {
+    double currentLat = gps.location.lat();
+    double currentLong = gps.location.lng();
+    
+    // Make copies of reference values
+    double tempRefLat = refLatitude;
+    double tempRefLong = refLongitude;
+    double tempCurrentLat = currentLat;
+    double tempCurrentLong = currentLong;
+    
+    // Calculate raw differences
+    double latDiff = tempCurrentLat - tempRefLat;
+    double longDiff = tempCurrentLong - tempRefLong;
+    
+    // Take absolute value after calculating difference
+    if(latDiff < 0) latDiff = -latDiff;
+    if(longDiff < 0) longDiff = -longDiff;
+    
+    // Debug output
+    Serial.println("\n=== Position Check ===");
+    Serial.print("Current  Lat: ");
+    Serial.print(currentLat, 8);
+    Serial.print("  Long: ");
+    Serial.println(currentLong, 8);
+    
+    Serial.print("Reference Lat: ");
+    Serial.print(refLatitude, 8);
+    Serial.print("  Long: ");
+    Serial.println(refLongitude, 8);
+    
+    Serial.print("Raw Difference Lat: ");
+    Serial.print(tempCurrentLat - tempRefLat, 8);
+    Serial.print("  Long: ");
+    Serial.println(tempCurrentLong - tempRefLong, 8);
+    
+    Serial.print("Absolute Difference Lat: ");
+    Serial.print(latDiff, 8);
+    Serial.print("  Long: ");
+    Serial.println(longDiff, 8);
+    
+    Serial.print("Threshold: ");
+    Serial.println(THRESHOLD, 8);
+    Serial.println("===================\n");
+    
+    if (latDiff > THRESHOLD || longDiff > THRESHOLD) {
+        Serial.println("*** Movement detected! Distance exceeded threshold! ***");
+        // Start alarm sequence
+        beepCount = 3;
+        alarmActive = true;
+        lastBeepTime = millis();
+    }
+}
+
+void updateAlarm() {
+    if (alarmActive) {
+        unsigned long currentTime = millis();
+        
+        // Check if it's time to change beep state
+        if (currentTime - lastBeepTime >= (beepState ? BEEP_DURATION : (BEEP_INTERVAL - BEEP_DURATION))) {
+            if (beepState) {
+                // Turn off beep
+                noTone(BUZZER_PIN);
+                beepState = false;
+                beepCount--;
+                
+                // Check if we're done with all beeps
+                if (beepCount <= 0) {
+                    alarmActive = false;
+                }
+            } else {
+                // Turn on beep
+                tone(BUZZER_PIN, 250);
+                beepState = true;
+            }
+            lastBeepTime = currentTime;
+        }
+    }
+}
